@@ -13,9 +13,9 @@ import "hardhat/console.sol";
 contract NFT is ERC721URIStorage, EIP712, AccessControl {
     using ECDSA for bytes32;
 
-    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     string private constant SIGNING_DOMAIN = "NFT";
     string private constant SIGNATURE_VERSION = "1";
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
     constructor()
         ERC721("Lazy NFT ", "LFT")
