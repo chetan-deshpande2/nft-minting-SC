@@ -1,27 +1,36 @@
 //SPDX-License-Identifier: MIT
-
 pragma solidity ^0.8.7;
+pragma abicoder v2;
 
+import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/draft-EIP712.sol";
-import "@openzeppelin/contracts/utils/Counters.sol";
 import "hardhat/console.sol";
 
-contract NFT is ERC721URIStorage, EIP712, AccessControl {
+contract NFT is EIP712, AccessControl, ERC721URIStorage {
     using ECDSA for bytes32;
 
     string private constant SIGNING_DOMAIN = "NFT";
     string private constant SIGNATURE_VERSION = "1";
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
+    struct Voucher {
+        address signer;
+        uint256 tokenId;
+        uint256 minPrice;
+        string tokenURI;
+        bytes signature;
+    }
+
     event Mint(
         address indexed signer,
         address minter,
         uint256 tokenId,
-        string tokenURI
+        uint256 minPrice,
+        string tokenURI,
+        bytes signature
     );
 
     constructor()
@@ -31,86 +40,81 @@ contract NFT is ERC721URIStorage, EIP712, AccessControl {
         _setupRole(MINTER_ROLE, msg.sender);
     }
 
-    function addMinterRole(address _minter) external {
+    function addSignerRole(address _signer) external {
         require(
-            _minter != address(0),
+            _signer != address(0),
             "Minter Address cannot be zero address."
         );
-        _setupRole(MINTER_ROLE, _minter);
+        _setupRole(MINTER_ROLE, _signer);
     }
 
-    function addSignerRole(address _signer)
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        require(_signer != address(0), "Admin Address cannot be zero address.");
-        grantRole(DEFAULT_ADMIN_ROLE, _signer);
-    }
-
-    function isMinter(address account) public view returns (bool) {
+    function isSigner(address account) public view returns (bool) {
         return hasRole(MINTER_ROLE, account);
     }
 
-    function isSigner(address account) external view returns (bool) {
-        return hasRole(DEFAULT_ADMIN_ROLE, account);
-    }
-
-    function mintToken(
-        address minter,
-        uint256 tokenId,
-        uint256 minPrice,
-        string memory tokenURI,
-        bytes memory signature
-    ) external payable {
+    function mintToken(address minter, Voucher calldata voucher)
+        external
+        payable
+        returns (uint256)
+    {
+        address signer = _verify(voucher);
+        require(signer != minter, "You can not purchase your own token");
+        require(isSigner(signer) == false, "Invalid Signature");
         require(
-            hasRole(MINTER_ROLE, minter),
-            "Signature invalid or unauthorized"
+            msg.value >= voucher.minPrice,
+            "Insufficient funds to mint item"
         );
 
-        address signer = _verify(tokenId, minPrice, tokenURI, signature);
+        _mint(signer, voucher.tokenId);
+        _setTokenURI(voucher.tokenId, voucher.tokenURI);
+        _transfer(signer, minter, voucher.tokenId);
 
-        require(msg.value >= minPrice, "Insufficient funds to mint item");
-        _setTokenURI(tokenId, tokenURI);
-        _mint(signer, tokenId);
-        _transfer(signer, minter, tokenId);
-        payable(signer).transfer(minPrice);
-        emit Mint(signer, minter, tokenId, tokenURI);
+        if (msg.value > voucher.minPrice) {
+            payable(msg.sender).transfer(msg.value - voucher.minPrice);
+        }
+        payable(signer).transfer(voucher.minPrice);
+
+        emit Mint(
+            signer,
+            minter,
+            voucher.tokenId,
+            voucher.minPrice,
+            voucher.tokenURI,
+            voucher.signature
+        );
+
+        return voucher.tokenId;
     }
 
-    function check(
-        uint256 tokenId,
-        uint256 minPrice,
-        string memory tokenURI,
-        bytes memory signature
-    ) external view returns (address) {
-        return _verify(tokenId, minPrice, tokenURI, signature);
+    function check(Voucher calldata voucher) external view returns (address) {
+        return _verify(voucher);
     }
 
-    function _verify(
-        uint256 tokenId,
-        uint256 minPrice,
-        string memory tokenURI,
-        bytes memory _signature
-    ) internal view returns (address) {
-        bytes32 digest = _hash(tokenId, minPrice, tokenURI);
-        return ECDSA.recover(digest, _signature);
+    // returns signer address
+    function _verify(Voucher calldata voucher) internal view returns (address) {
+        bytes32 digest = _hash(voucher);
+        return ECDSA.recover(digest, voucher.signature);
     }
 
-    function _hash(
-        uint256 tokenId,
-        uint256 minPrice,
-        string memory tokenURI
-    ) internal view returns (bytes32) {
+    function getChainID() external view returns (uint256) {
+        uint256 id;
+        assembly {
+            id := chainid()
+        }
+        return id;
+    }
+
+    function _hash(Voucher calldata voucher) internal view returns (bytes32) {
         return
             _hashTypedDataV4(
                 keccak256(
                     abi.encode(
                         keccak256(
-                            "NFTStruct(uint256 tokenId,uint256 minPrice,string tokenURI)"
+                            "Voucher(uint256 tokenId,uint256 minPrice,string tokenURI)"
                         ),
-                        tokenId,
-                        minPrice,
-                        keccak256(bytes(tokenURI))
+                        voucher.tokenId,
+                        voucher.minPrice,
+                        keccak256(bytes(voucher.tokenURI))
                     )
                 )
             );
